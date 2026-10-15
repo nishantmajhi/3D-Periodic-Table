@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<!--
+  Historical reference, not the app. This is the single-file vanilla
+  Three.js + GSAP prototype the Next.js app in app/ and src/ was ported from
+  (see tracker.md); it is not built, served or kept in step. Its isotopes are
+  the early generated placeholder, not the NIST data, and its raycasting has
+  the fault the app fixed on 2026-10-01: tile outlines answer clicks aimed at
+  their neighbours. Keep it for the feel of the interaction, not the data.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>3D Periodic Table — UX Prototype</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap');
+
+  :root{
+    --bg: #090c11;
+    --panel: rgba(15,20,28,0.62);
+    --panel-border: rgba(120,170,200,0.18);
+    --cyan: #5ec8d8;
+    --amber: #ffb454;
+    --text: #e7edf3;
+    --muted: #93a1b0;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);font-family:'Inter',sans-serif;}
+  #bg-canvas,#fg-canvas{position:absolute;top:0;left:0;width:100%;height:100%;display:block;}
+  #bg-canvas{z-index:1;}
+  #blur-overlay{
+    position:absolute;top:0;left:0;width:100%;height:100%;z-index:2;pointer-events:none;
+    backdrop-filter:blur(0px);-webkit-backdrop-filter:blur(0px);
+    background:rgba(6,9,13,0);
+    transition:backdrop-filter .7s ease, background .7s ease;
+  }
+  #blur-overlay.active{
+    backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+    background:rgba(6,9,13,0.42);
+  }
+  #fg-canvas{z-index:3;}
+  #hit-layer{position:absolute;top:0;left:0;width:100%;height:100%;z-index:4;cursor:grab;background:transparent;}
+  #hit-layer.grabbing{cursor:grabbing;}
+
+  #hud{
+    position:absolute;top:16px;left:16px;z-index:5;color:var(--text);
+    background:var(--panel);border:1px solid var(--panel-border);
+    padding:12px 16px;border-radius:10px;max-width:260px;pointer-events:none;
+    font-size:12.5px;line-height:1.6;backdrop-filter:blur(6px);
+  }
+  #hud .title{font-family:'Space Grotesk',sans-serif;font-weight:600;color:var(--cyan);font-size:13px;letter-spacing:.02em;margin-bottom:4px;display:block;}
+  #hud b{color:var(--amber);font-weight:500;}
+  #hud .state{margin-top:8px;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;}
+
+  #backBtn{
+    position:absolute;top:16px;right:16px;z-index:6;
+    padding:9px 18px;background:rgba(20,26,36,.75);border:1px solid var(--panel-border);
+    color:var(--text);border-radius:9px;font-size:13px;font-family:'Inter',sans-serif;font-weight:500;
+    cursor:pointer;display:none;backdrop-filter:blur(6px);transition:background .2s;
+  }
+  #backBtn:hover{background:rgba(94,200,216,0.18);}
+
+  #detailPanel{
+    position:absolute;left:16px;bottom:16px;z-index:6;
+    width:290px;color:var(--text);background:var(--panel);border:1px solid var(--panel-border);
+    border-radius:12px;padding:18px 20px;backdrop-filter:blur(8px);
+    opacity:0;transform:translateY(12px);pointer-events:none;
+    transition:opacity .4s ease, transform .4s ease;
+  }
+  #detailPanel.show{opacity:1;transform:translateY(0);pointer-events:auto;}
+  #detailPanel h3{margin:0 0 2px;font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;color:var(--amber);}
+  #detailPanel .sub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:.03em;text-transform:uppercase;margin-bottom:12px;display:block;}
+  #detailPanel .row{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.06);}
+  #detailPanel .row b{color:var(--cyan);font-weight:500;}
+  #detailPanel p{font-size:12.5px;color:var(--muted);line-height:1.55;margin:12px 0 0;}
+
+  #toast{
+    position:absolute;bottom:22px;left:50%;transform:translateX(-50%) translateY(8px);z-index:6;
+    background:rgba(20,26,36,.85);border:1px solid var(--panel-border);color:var(--text);
+    padding:9px 18px;border-radius:20px;font-size:12.5px;opacity:0;transition:opacity .3s, transform .3s;
+    pointer-events:none;backdrop-filter:blur(6px);
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+
+<canvas id="bg-canvas"></canvas>
+<div id="blur-overlay"></div>
+<canvas id="fg-canvas"></canvas>
+<div id="hit-layer"></div>
+
+<div id="hud">
+  <span class="title">3D PERIODIC TABLE — PROTOTYPE</span>
+  Drag to orbit · scroll to zoom · click any element to open its isotopes.
+  <div class="state" id="stateLine">state: overview</div>
+</div>
+
+<button id="backBtn">← Back</button>
+<div id="detailPanel"></div>
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+/* ------------------------------------------------------------------ */
+/*  DATA                                                               */
+/* ------------------------------------------------------------------ */
+const CATEGORY_COLORS = {
+  alkali:      0xff6b6b,
+  alkaline:    0xffa94d,
+  transition:  0xffd43b,
+  posttrans:   0x74c0fc,
+  metalloid:   0xb197fc,
+  nonmetal:    0x8ce99a,
+  halogen:     0xff8fa3,
+  noble:       0xd0bfff,
+  lanthanide:  0x63e6be,
+  actinide:    0x66d9e8,
+};
+const CAT = {
+  alkali:['Li','Na','K','Rb','Cs','Fr'],
+  alkaline:['Be','Mg','Ca','Sr','Ba','Ra'],
+  posttrans:['Al','Ga','In','Sn','Tl','Pb','Bi','Nh','Fl','Mc','Lv'],
+  metalloid:['B','Si','Ge','As','Sb','Te','Po','At'],
+  nonmetal:['H','C','N','O','P','S','Se'],
+  halogen:['F','Cl','Br','I','Ts'],
+  noble:['He','Ne','Ar','Kr','Xe','Rn','Og'],
+};
+const LANTHANIDES = ['La','Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu'];
+const ACTINIDES   = ['Ac','Th','Pa','U','Np','Pu','Am','Cm','Bk','Cf','Es','Fm','Md','No','Lr'];
+function categoryOf(sym){
+  if(LANTHANIDES.includes(sym)) return 'lanthanide';
+  if(ACTINIDES.includes(sym)) return 'actinide';
+  for(const k in CAT) if(CAT[k].includes(sym)) return k;
+  return 'transition';
+}
+
+// [group, symbol, atomicNumber] per period — defines table LAYOUT only.
+// '*' marks the La/Ac range-cell; the real elements live in the towers.
+const PERIODS = [
+ [[1,'H',1],[18,'He',2]],
+ [[1,'Li',3],[2,'Be',4],[13,'B',5],[14,'C',6],[15,'N',7],[16,'O',8],[17,'F',9],[18,'Ne',10]],
+ [[1,'Na',11],[2,'Mg',12],[13,'Al',13],[14,'Si',14],[15,'P',15],[16,'S',16],[17,'Cl',17],[18,'Ar',18]],
+ [[1,'K',19],[2,'Ca',20],[3,'Sc',21],[4,'Ti',22],[5,'V',23],[6,'Cr',24],[7,'Mn',25],[8,'Fe',26],[9,'Co',27],[10,'Ni',28],[11,'Cu',29],[12,'Zn',30],[13,'Ga',31],[14,'Ge',32],[15,'As',33],[16,'Se',34],[17,'Br',35],[18,'Kr',36]],
+ [[1,'Rb',37],[2,'Sr',38],[3,'Y',39],[4,'Zr',40],[5,'Nb',41],[6,'Mo',42],[7,'Tc',43],[8,'Ru',44],[9,'Rh',45],[10,'Pd',46],[11,'Ag',47],[12,'Cd',48],[13,'In',49],[14,'Sn',50],[15,'Sb',51],[16,'Te',52],[17,'I',53],[18,'Xe',54]],
+ [[1,'Cs',55],[2,'Ba',56],[3,'La*',0],[4,'Hf',72],[5,'Ta',73],[6,'W',74],[7,'Re',75],[8,'Os',76],[9,'Ir',77],[10,'Pt',78],[11,'Au',79],[12,'Hg',80],[13,'Tl',81],[14,'Pb',82],[15,'Bi',83],[16,'Po',84],[17,'At',85],[18,'Rn',86]],
+ [[1,'Fr',87],[2,'Ra',88],[3,'Ac*',0],[4,'Rf',104],[5,'Db',105],[6,'Sg',106],[7,'Bh',107],[8,'Hs',108],[9,'Mt',109],[10,'Ds',110],[11,'Rg',111],[12,'Cn',112],[13,'Nh',113],[14,'Fl',114],[15,'Mc',115],[16,'Lv',116],[17,'Ts',117],[18,'Og',118]],
+];
+
+// Full 118-element dataset: [Z, symbol, name, roundedMostStableMass]
+// Mass numbers are the standard/longest-lived isotope, rounded — used to
+// generate a 4-isotope spread per element. For synthetic/superheavy
+// elements these are illustrative (longest-lived known isotope), not
+// exhaustive nuclear data.
+const ELEMENTS = [
+ [1,'H','Hydrogen',1],[2,'He','Helium',4],[3,'Li','Lithium',7],[4,'Be','Beryllium',9],
+ [5,'B','Boron',11],[6,'C','Carbon',12],[7,'N','Nitrogen',14],[8,'O','Oxygen',16],
+ [9,'F','Fluorine',19],[10,'Ne','Neon',20],[11,'Na','Sodium',23],[12,'Mg','Magnesium',24],
+ [13,'Al','Aluminium',27],[14,'Si','Silicon',28],[15,'P','Phosphorus',31],[16,'S','Sulfur',32],
+ [17,'Cl','Chlorine',35],[18,'Ar','Argon',40],[19,'K','Potassium',39],[20,'Ca','Calcium',40],
+ [21,'Sc','Scandium',45],[22,'Ti','Titanium',48],[23,'V','Vanadium',51],[24,'Cr','Chromium',52],
+ [25,'Mn','Manganese',55],[26,'Fe','Iron',56],[27,'Co','Cobalt',59],[28,'Ni','Nickel',58],
+ [29,'Cu','Copper',63],[30,'Zn','Zinc',64],[31,'Ga','Gallium',69],[32,'Ge','Germanium',74],
+ [33,'As','Arsenic',75],[34,'Se','Selenium',80],[35,'Br','Bromine',79],[36,'Kr','Krypton',84],
+ [37,'Rb','Rubidium',85],[38,'Sr','Strontium',88],[39,'Y','Yttrium',89],[40,'Zr','Zirconium',90],
+ [41,'Nb','Niobium',93],[42,'Mo','Molybdenum',98],[43,'Tc','Technetium',98],[44,'Ru','Ruthenium',102],
+ [45,'Rh','Rhodium',103],[46,'Pd','Palladium',106],[47,'Ag','Silver',107],[48,'Cd','Cadmium',114],
+ [49,'In','Indium',115],[50,'Sn','Tin',120],[51,'Sb','Antimony',121],[52,'Te','Tellurium',130],
+ [53,'I','Iodine',127],[54,'Xe','Xenon',132],[55,'Cs','Caesium',133],[56,'Ba','Barium',138],
+ [57,'La','Lanthanum',139],[58,'Ce','Cerium',140],[59,'Pr','Praseodymium',141],[60,'Nd','Neodymium',142],
+ [61,'Pm','Promethium',145],[62,'Sm','Samarium',152],[63,'Eu','Europium',153],[64,'Gd','Gadolinium',158],
+ [65,'Tb','Terbium',159],[66,'Dy','Dysprosium',164],[67,'Ho','Holmium',165],[68,'Er','Erbium',166],
+ [69,'Tm','Thulium',169],[70,'Yb','Ytterbium',174],[71,'Lu','Lutetium',175],[72,'Hf','Hafnium',180],
+ [73,'Ta','Tantalum',181],[74,'W','Tungsten',184],[75,'Re','Rhenium',187],[76,'Os','Osmium',192],
+ [77,'Ir','Iridium',193],[78,'Pt','Platinum',195],[79,'Au','Gold',197],[80,'Hg','Mercury',202],
+ [81,'Tl','Thallium',205],[82,'Pb','Lead',208],[83,'Bi','Bismuth',209],[84,'Po','Polonium',209],
+ [85,'At','Astatine',210],[86,'Rn','Radon',222],[87,'Fr','Francium',223],[88,'Ra','Radium',226],
+ [89,'Ac','Actinium',227],[90,'Th','Thorium',232],[91,'Pa','Protactinium',231],[92,'U','Uranium',238],
+ [93,'Np','Neptunium',237],[94,'Pu','Plutonium',244],[95,'Am','Americium',243],[96,'Cm','Curium',247],
+ [97,'Bk','Berkelium',247],[98,'Cf','Californium',251],[99,'Es','Einsteinium',252],[100,'Fm','Fermium',257],
+ [101,'Md','Mendelevium',258],[102,'No','Nobelium',259],[103,'Lr','Lawrencium',262],[104,'Rf','Rutherfordium',267],
+ [105,'Db','Dubnium',268],[106,'Sg','Seaborgium',271],[107,'Bh','Bohrium',272],[108,'Hs','Hassium',270],
+ [109,'Mt','Meitnerium',276],[110,'Ds','Darmstadtium',281],[111,'Rg','Roentgenium',280],[112,'Cn','Copernicium',285],
+ [113,'Nh','Nihonium',284],[114,'Fl','Flerovium',289],[115,'Mc','Moscovium',288],[116,'Lv','Livermorium',293],
+ [117,'Ts','Tennessine',294],[118,'Og','Oganesson',294],
+];
+const ELEMENTS_BY_SYMBOL = {};
+ELEMENTS.forEach(([z,sym,name,weight])=>{ ELEMENTS_BY_SYMBOL[sym] = {z,sym,name,weight}; });
+
+// Elements with no stable isotopes at all (well-established fact).
+const NO_STABLE_ISOTOPES = z => z===43 || z===61 || z>=84;
+
+const HYDROGEN_ISOTOPES = [
+  {mass:1, name:'Protium',    protons:1, neutrons:0, note:'The common form of hydrogen: one proton, no neutrons. Makes up over 99.98% of natural hydrogen.'},
+  {mass:2, name:'Deuterium',  protons:1, neutrons:1, note:'Stable isotope used in heavy water and nuclear research.'},
+  {mass:3, name:'Tritium',    protons:1, neutrons:2, note:'Radioactive, half-life ≈ 12.3 years. Used in self-luminous signage.'},
+  {mass:4, name:'Hydrogen-4', protons:1, neutrons:3, note:'Highly unstable, only produced briefly in the lab.'},
+];
+
+function getIsotopesFor(el){
+  if(el.sym === 'H') return HYDROGEN_ISOTOPES;
+  const Z = el.z, A0 = el.weight;
+  let masses = [A0-1, A0, A0+1, A0+2].filter(m => m >= Z);
+  while(masses.length < 4) masses.push(masses[masses.length-1] + 1);
+  masses = masses.slice(0,4);
+  const noStable = NO_STABLE_ISOTOPES(Z);
+  return masses.map(m => ({
+    mass:m, protons:Z, neutrons:m-Z, name:`${el.name}-${m}`,
+    note: noStable
+      ? `${el.name} has no stable isotopes — every known form, including this one, is radioactive.`
+      : `A form of ${el.name} with ${m-Z} neutron${(m-Z)===1?'':'s'} alongside its ${Z} proton${Z>1?'s':''}.`
+  }));
+}
+
+/* ------------------------------------------------------------------ */
+/*  LAYOUT CONSTANTS                                                   */
+/* ------------------------------------------------------------------ */
+const SP = 1.05, TILE = 0.86, TILE_H = 0.2;
+const colX = c => (c - 8.5) * SP;   // c = group-1 (0..17)
+const rowZ = r => (r - 3) * SP;     // r = period index (0..6)
+
+/* ------------------------------------------------------------------ */
+/*  RENDER SETUP                                                       */
+/* ------------------------------------------------------------------ */
+const bgCanvas = document.getElementById('bg-canvas');
+const fgCanvas = document.getElementById('fg-canvas');
+const hitLayer = document.getElementById('hit-layer');
+const backBtn  = document.getElementById('backBtn');
+const detailPanel = document.getElementById('detailPanel');
+const blurOverlay = document.getElementById('blur-overlay');
+const toast = document.getElementById('toast');
+const stateLine = document.getElementById('stateLine');
+
+const rendererMain = new THREE.WebGLRenderer({canvas:bgCanvas, antialias:true});
+rendererMain.setPixelRatio(Math.min(window.devicePixelRatio,2));
+rendererMain.setClearColor(0x090c11,1);
+
+const rendererFg = new THREE.WebGLRenderer({canvas:fgCanvas, antialias:true, alpha:true});
+rendererFg.setPixelRatio(Math.min(window.devicePixelRatio,2));
+rendererFg.setClearColor(0x000000,0);
+
+const sceneMain = new THREE.Scene();
+sceneMain.fog = new THREE.Fog(0x090c11, 18, 42);
+const sceneFg = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(52, window.innerWidth/window.innerHeight, 0.1, 100);
+
+function resize(){
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+  rendererMain.setSize(w,h);
+  rendererFg.setSize(w,h);
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---- ground grid for spatial reference ---- */
+const gridHelper = new THREE.GridHelper(30, 30, 0x1c2733, 0x141c25);
+gridHelper.position.y = -0.03;
+sceneMain.add(gridHelper);
+
+/* ------------------------------------------------------------------ */
+/*  CANVAS TEXTURE HELPERS                                             */
+/* ------------------------------------------------------------------ */
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+
+function tileLabelTexture(text, num){
+  const w=160,h=160;
+  const c=document.createElement('canvas'); c.width=w;c.height=h;
+  const ctx=c.getContext('2d');
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  if(num){
+    ctx.fillStyle='rgba(235,245,250,0.6)';
+    ctx.font='500 20px "IBM Plex Mono", monospace';
+    ctx.fillText(num, 10, 8);
+  }
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#f2f8fc';
+  const clean = text.replace('*','');
+  const fsize = clean.length>3 ? 34 : 60;
+  ctx.font=`700 ${fsize}px "Space Grotesk", sans-serif`;
+  ctx.fillText(clean, w/2, h/2 + (clean.length>3?2:14));
+  return new THREE.CanvasTexture(c);
+}
+
+function isoLabelTexture(sym, iso){
+  const w=220,h=220;
+  const c=document.createElement('canvas'); c.width=w;c.height=h;
+  const ctx=c.getContext('2d');
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#fff6e6';
+  const fsize = sym.length>2 ? 56 : 72;
+  ctx.font=`700 ${fsize}px "Space Grotesk", sans-serif`;
+  ctx.fillText(sym, w/2, h/2-24);
+  ctx.font='600 26px "IBM Plex Mono", monospace';
+  ctx.fillStyle='#ffd9a0';
+  ctx.fillText('mass '+iso.mass, w/2, h/2+38);
+  ctx.font='500 17px Inter, sans-serif';
+  ctx.fillStyle='rgba(255,246,230,0.8)';
+  ctx.fillText(iso.name, w/2, h/2+68);
+  return new THREE.CanvasTexture(c);
+}
+
+function captionTexture(text){
+  const w=280,h=90;
+  const c=document.createElement('canvas'); c.width=w;c.height=h;
+  const ctx=c.getContext('2d');
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle='#cfe7ef';
+  ctx.font='600 32px "IBM Plex Mono", monospace';
+  ctx.fillText(text, w/2, h/2);
+  return new THREE.CanvasTexture(c);
+}
+
+function buildKeyTexture(){
+  const w=900,h=340;
+  const c=document.createElement('canvas'); c.width=w;c.height=h;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='rgba(11,15,20,0.94)';
+  roundRect(ctx,0,0,w,h,28); ctx.fill();
+  ctx.strokeStyle='rgba(120,170,200,0.35)'; ctx.lineWidth=3;
+  roundRect(ctx,3,3,w-6,h-6,26); ctx.stroke();
+
+  ctx.fillStyle='#8fd8ea'; ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.font='600 30px "Space Grotesk", sans-serif';
+  ctx.fillText('ELEMENT CATEGORIES', 30, 22);
+
+  ctx.strokeStyle='rgba(120,170,200,0.25)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(30,66); ctx.lineTo(w-30,66); ctx.stroke();
+
+  const items = [
+    ['Alkali metal', CATEGORY_COLORS.alkali],
+    ['Alkaline earth', CATEGORY_COLORS.alkaline],
+    ['Transition metal', CATEGORY_COLORS.transition],
+    ['Post-transition', CATEGORY_COLORS.posttrans],
+    ['Metalloid', CATEGORY_COLORS.metalloid],
+    ['Nonmetal', CATEGORY_COLORS.nonmetal],
+    ['Halogen', CATEGORY_COLORS.halogen],
+    ['Noble gas', CATEGORY_COLORS.noble],
+    ['Lanthanide', CATEGORY_COLORS.lanthanide],
+    ['Actinide', CATEGORY_COLORS.actinide],
+  ];
+  const cols=5, rows=2, cw=(w-60)/cols, ch=(h-100)/rows;
+  items.forEach((it,i)=>{
+    const cx = 30 + (i%cols)*cw;
+    const cy = 96 + Math.floor(i/cols)*ch;
+    ctx.fillStyle = '#'+it[1].toString(16).padStart(6,'0');
+    roundRect(ctx,cx,cy+4,24,24,6); ctx.fill();
+    ctx.fillStyle='#dbe7ef'; ctx.font='500 20px Inter, sans-serif';
+    ctx.textBaseline='middle';
+    ctx.fillText(it[0], cx+34, cy+16);
+  });
+  return new THREE.CanvasTexture(c);
+}
+
+/* ------------------------------------------------------------------ */
+/*  TILE / TOWER / PILLAR / KEY BUILDERS                               */
+/* ------------------------------------------------------------------ */
+function buildTile(el, isMarker){
+  const g = new THREE.Group();
+  const color = CATEGORY_COLORS[el.category] ?? 0x888888;
+  const height = isMarker ? 0.42 : TILE_H;
+  const geo = new THREE.BoxGeometry(TILE, height, TILE);
+  const mat = new THREE.MeshBasicMaterial({color, transparent:true, opacity:isMarker?0.30:0.16});
+  const box = new THREE.Mesh(geo, mat);
+  box.position.y = height/2;
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geo),
+    new THREE.LineBasicMaterial({color, transparent:true, opacity:0.9})
+  );
+  edges.position.y = height/2;
+  g.add(box, edges);
+
+  const label = isMarker ? el.rangeLabel : el.sym;
+  const tex = tileLabelTexture(label, isMarker ? null : el.z);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
+  sprite.scale.set(TILE*0.95, TILE*0.95, 1);
+  sprite.position.y = height + 0.02;
+  g.add(sprite);
+
+  g.userData = {el, isMarker};
+  return g;
+}
+
+const towerGroups = []; // {grp, boxMat, edgesMat, spriteMat, baseBoxOpacity, baseEdgesOpacity} — faded in as camera tilts
+
+function buildTower(originTile, symbols, color){
+  const startY = 0.42 + 0.35;
+  const created = [];
+  symbols.forEach((sym,i)=>{
+    const geo=new THREE.BoxGeometry(TILE*0.8, 0.42, TILE*0.8);
+    const boxOpac=0.18, edgesOpac=0.85;
+    const mat=new THREE.MeshBasicMaterial({color, transparent:true, opacity:boxOpac});
+    const box=new THREE.Mesh(geo, mat);
+    const edgesMat = new THREE.LineBasicMaterial({color, transparent:true, opacity:edgesOpac});
+    const edges=new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgesMat);
+    const grp=new THREE.Group();
+    grp.add(box, edges);
+
+    const tex = tileLabelTexture(sym, null);
+    const spriteMat = new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false});
+    const sp = new THREE.Sprite(spriteMat);
+    sp.scale.set(TILE*0.7, TILE*0.7, 1);
+    grp.add(sp);
+
+    const rec = ELEMENTS_BY_SYMBOL[sym];
+    grp.userData = {el:{...rec, category:categoryOf(sym)}, isMarker:false};
+    grp.position.copy(originTile.position);
+    grp.position.y = startY + i*0.5;
+    grp.visible = false;
+    sceneMain.add(grp);
+    created.push(grp);
+    towerGroups.push({grp, boxMat:mat, edgesMat, spriteMat, baseBoxOpacity:boxOpac, baseEdgesOpacity:edgesOpac});
+  });
+  return created;
+}
+
+function buildPillar(colIndex, rowIndex, h){
+  const x = colX(colIndex), z = rowZ(rowIndex);
+  const geo = new THREE.BoxGeometry(0.14, h, 0.14);
+  const mat = new THREE.MeshBasicMaterial({color:0x5ec8d8, transparent:true, opacity:0.10});
+  const box = new THREE.Mesh(geo, mat);
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geo),
+    new THREE.LineBasicMaterial({color:0x5ec8d8, transparent:true, opacity:0.45})
+  );
+  const g = new THREE.Group(); g.add(box, edges);
+  g.position.set(x, -h/2, z);
+  sceneMain.add(g);
+}
+
+function buildKey(){
+  const tex = buildKeyTexture();
+  const w=4.2, h=4.2*(340/900);
+  const geo = new THREE.PlaneGeometry(w,h);
+  const mat = new THREE.MeshBasicMaterial({map:tex, transparent:true, side:THREE.DoubleSide});
+  const plane = new THREE.Mesh(geo, mat);
+  plane.rotation.x = -Math.PI/2;
+  const x = colX(6.5), z = rowZ(1); // centered across group3-12, periods1-3
+  plane.position.set(x, 0.05, z);
+  sceneMain.add(plane);
+}
+
+/* ------------------------------------------------------------------ */
+/*  ASSEMBLE TABLE                                                     */
+/* ------------------------------------------------------------------ */
+const tilesArr = [];
+
+PERIODS.forEach((row, ri)=>{
+  row.forEach(([grp, sym, num])=>{
+    const marker = sym.includes('*');
+    let el;
+    if(marker){
+      const cat = ri===5 ? 'lanthanide' : 'actinide';
+      el = {category:cat, rangeLabel: ri===5 ? '57-71' : '89-103'};
+    } else {
+      const rec = ELEMENTS_BY_SYMBOL[sym];
+      el = {...rec, category:categoryOf(sym)};
+    }
+    const tile = buildTile(el, marker);
+    tile.position.set(colX(grp-1), 0, rowZ(ri));
+    sceneMain.add(tile);
+    tilesArr.push(tile);
+    if(marker){
+      const towerTiles = buildTower(tile, ri===5 ? LANTHANIDES : ACTINIDES, CATEGORY_COLORS[el.category]);
+      tilesArr.push(...towerTiles);
+    }
+  });
+});
+
+buildKey();
+[[12,2,3.2],[14,2,2.6],[16,3,3.6],[13,4,2.8],[15,4,3.0],[17,2,2.2]].forEach(p=>buildPillar(...p));
+
+/* ------------------------------------------------------------------ */
+/*  CAMERA ORBIT (custom, no addon dependency)                         */
+/* ------------------------------------------------------------------ */
+// Starts near-top-down so the table first reads exactly like a flat 2D
+// periodic table. Note this alone can't hide the towers optically — from
+// directly overhead, the CLOSEST point on a vertical tower (its top cube)
+// would actually occlude the marker cell, showing the wrong element. So
+// the towers are also faded/hidden by phi (see PHI_HIDE/PHI_SHOW below)
+// and only fade into view once you've tilted enough to see them "for real".
+const PHI_HIDE = 0.12, PHI_SHOW = 0.55;
+let radius=17, theta=0, phi=PHI_HIDE;
+const target = new THREE.Vector3(0, 0.2, 0);
+function updateCamera(){
+  const sinPhi = Math.sin(phi);
+  camera.position.x = target.x + radius*sinPhi*Math.sin(theta);
+  camera.position.y = target.y + radius*Math.cos(phi);
+  camera.position.z = target.z + radius*sinPhi*Math.cos(theta);
+  camera.lookAt(target);
+
+  const revealT = Math.max(0, Math.min(1, (phi-PHI_HIDE)/(PHI_SHOW-PHI_HIDE)));
+  towerGroups.forEach(t=>{
+    t.grp.visible = revealT > 0.01;
+    t.boxMat.opacity = t.baseBoxOpacity * revealT;
+    t.edgesMat.opacity = t.baseEdgesOpacity * revealT;
+    t.spriteMat.opacity = revealT;
+  });
+}
+updateCamera();
+
+let dragging=false, moved=false, lastX=0, lastY=0, pdX=0, pdY=0;
+hitLayer.addEventListener('pointerdown', e=>{
+  dragging=true; moved=false;
+  pdX=lastX=e.clientX; pdY=lastY=e.clientY;
+  hitLayer.classList.add('grabbing');
+});
+window.addEventListener('pointermove', e=>{
+  if(!dragging) return;
+  const dx=e.clientX-lastX, dy=e.clientY-lastY;
+  if(Math.abs(e.clientX-pdX)+Math.abs(e.clientY-pdY) > 4) moved=true;
+  theta -= dx*0.006;
+  phi   -= dy*0.006;
+  phi = Math.max(0.06, Math.min(Math.PI-0.06, phi));
+  updateCamera();
+  lastX=e.clientX; lastY=e.clientY;
+});
+window.addEventListener('pointerup', e=>{
+  if(dragging && !moved) handleClick(e);
+  dragging=false;
+  hitLayer.classList.remove('grabbing');
+});
+hitLayer.addEventListener('wheel', e=>{
+  radius = Math.max(6, Math.min(26, radius + e.deltaY*0.045));
+  updateCamera();
+  e.preventDefault();
+}, {passive:false});
+
+/* ------------------------------------------------------------------ */
+/*  RAYCASTING / CLICK HANDLING                                        */
+/* ------------------------------------------------------------------ */
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+function ndcFromEvent(e){
+  const rect = hitLayer.getBoundingClientRect();
+  ndc.x = ((e.clientX-rect.left)/rect.width)*2-1;
+  ndc.y = -((e.clientY-rect.top)/rect.height)*2+1;
+}
+function getIntersects(objects){
+  raycaster.setFromCamera(ndc, camera);
+  return raycaster.intersectObjects(objects, true);
+}
+function findTileRoot(o){ while(o && !o.userData.el) o=o.parent; return o; }
+function findSubRoot(o, subs){ while(o && subs.indexOf(o)===-1) o=o.parent; return o; }
+
+function showToast(msg){
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=>toast.classList.remove('show'), 1800);
+}
+
+let state='overview', busy=false, popGroup=null, currentAtom=null, activeTile=null;
+const animatedAtoms=[];
+function setState(s){ state=s; stateLine.textContent='state: '+s; }
+
+function handleClick(e){
+  ndcFromEvent(e);
+  if(busy) return;
+  if(state==='overview'){
+    const hits=getIntersects(tilesArr);
+    if(hits.length){
+      const root=findTileRoot(hits[0].object);
+      if(!root) return;
+      if(root.userData.isMarker){
+        showToast(`Represents ${root.userData.el.rangeLabel.replace('-',' – ')} — tilt the view to see them rise up`);
+      } else {
+        startPop(root);
+      }
+    }
+  } else if(state==='popped'){
+    if(!popGroup) return;
+    const subs=popGroup.userData.subs.filter(s=>s.visible);
+    const hits=getIntersects(subs);
+    if(hits.length){
+      const root=findSubRoot(hits[0].object, subs);
+      if(root) selectIsotope(root.userData.index);
+    }
+  }
+}
+
+/* hover feedback: cursor + gentle scale bump */
+let hoveredTile=null;
+window.addEventListener('pointermove', e=>{
+  if(dragging) return;
+  ndcFromEvent(e);
+  let root=null;
+  if(state==='overview'){
+    const hits=getIntersects(tilesArr);
+    root = hits.length ? findTileRoot(hits[0].object) : null;
+  } else if(state==='popped' && popGroup){
+    const hits=getIntersects(popGroup.userData.subs.filter(s=>s.visible));
+    root = hits.length ? findSubRoot(hits[0].object, popGroup.userData.subs) : null;
+  }
+  if(root!==hoveredTile){
+    if(hoveredTile && hoveredTile.parent) hoveredTile.scale.set(1,1,1);
+    hoveredTile=root;
+    if(hoveredTile) hoveredTile.scale.set(1.1,1.1,1.1);
+  }
+  hitLayer.style.cursor = root ? 'pointer' : 'grab';
+});
+
+/* ------------------------------------------------------------------ */
+/*  ISOTOPE CUBE BUILDER                                                */
+/* ------------------------------------------------------------------ */
+const CUBE_SIZE = 0.8, CUBE_GAP = 0.16;
+const CUBE_STEP = CUBE_SIZE + CUBE_GAP;
+// side-by-side offsets along a single axis, centered on 0, with a gap
+const CUBE_SLOTS = [-1.5*CUBE_STEP, -0.5*CUBE_STEP, 0.5*CUBE_STEP, 1.5*CUBE_STEP];
+
+function buildIsotopeCube(sym, iso, index){
+  const size=CUBE_SIZE;
+  const geo=new THREE.BoxGeometry(size,size,size);
+  const color=0xffb454;
+  const mat=new THREE.MeshBasicMaterial({color, transparent:true, opacity:0.22});
+  const box=new THREE.Mesh(geo, mat);
+  const edges=new THREE.LineSegments(
+    new THREE.EdgesGeometry(geo),
+    new THREE.LineBasicMaterial({color:0xffe3b0, transparent:true, opacity:0.95})
+  );
+  const g=new THREE.Group(); g.add(box, edges);
+
+  const tex = isoLabelTexture(sym, iso);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
+  sp.scale.set(size*0.95, size*0.95, 1);
+  sp.position.z = size/2 + 0.03; // sit just proud of the face so the box doesn't depth-occlude the label
+  g.add(sp);
+
+  // side-by-side, in the popGroup's local space (a "long cuboid" with gaps)
+  g.position.set(CUBE_SLOTS[index], 0, 0);
+  g.scale.setScalar(0.001);
+  g.userData={index, iso};
+  return g;
+}
+
+/* ------------------------------------------------------------------ */
+/*  ATOM (BOHR-STYLE) ILLUSTRATION                                      */
+/* ------------------------------------------------------------------ */
+function fibonacciSpherePoint(i, n, r){
+  const golden = Math.PI*(3-Math.sqrt(5));
+  const y = n>1 ? 1-(i/(n-1))*2 : 0;
+  const radiusAtY = Math.sqrt(Math.max(0,1-y*y));
+  const t = golden*i;
+  return new THREE.Vector3(Math.cos(t)*radiusAtY*r, y*r, Math.sin(t)*radiusAtY*r);
+}
+function shellConfig(z){
+  const caps=[2,8,18,32,32,32,32];
+  let remaining=z; const shells=[];
+  for(const cap of caps){
+    if(remaining<=0) break;
+    const n=Math.min(cap, remaining);
+    shells.push(n);
+    remaining-=n;
+  }
+  return shells;
+}
+
+function buildAtom(protons, neutrons){
+  const g=new THREE.Group();
+  const total=protons+neutrons;
+  const shown=Math.min(total,50);
+  const R=0.16*Math.cbrt(total||1);
+
+  for(let i=0;i<shown;i++){
+    const isProton = i < Math.round(shown*(protons/total));
+    const geo=new THREE.SphereGeometry(0.1,8,8);
+    const mat=new THREE.MeshBasicMaterial({color:isProton?0xff6b6b:0xadb5bd});
+    const s=new THREE.Mesh(geo,mat);
+    s.position.copy(fibonacciSpherePoint(i, shown, R));
+    g.add(s);
+  }
+
+  const capTex = captionTexture(`${protons}p · ${neutrons}n`);
+  const capSprite = new THREE.Sprite(new THREE.SpriteMaterial({map:capTex, transparent:true, depthWrite:false}));
+  capSprite.scale.set(1.15, 0.37, 1);
+  capSprite.position.y = -(R+0.55);
+  g.add(capSprite);
+
+  const shells = shellConfig(protons); // neutral-atom electron count
+  const shellObjs=[];
+  shells.forEach((count,si)=>{
+    const rad = R + 0.75 + si*0.5;
+    const pts=[]; for(let a=0;a<=64;a++){ const t=a/64*Math.PI*2; pts.push(new THREE.Vector3(rad*Math.cos(t),0,rad*Math.sin(t))); }
+    const ring=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({color:0x7fd1ff, transparent:true, opacity:.45}));
+    ring.rotation.x = 0.3 + si*0.22;
+    ring.rotation.z = si*0.4;
+    g.add(ring);
+    const electrons=[];
+    for(let e=0;e<count;e++){
+      const em=new THREE.Mesh(new THREE.SphereGeometry(0.075,8,8), new THREE.MeshBasicMaterial({color:0xffe066}));
+      g.add(em);
+      electrons.push({mesh:em, phase:(e/count)*Math.PI*2});
+    }
+    shellObjs.push({rad, ring, electrons, dir: si%2===0?1:-1, speed:0.9-si*0.1});
+  });
+
+  g.userData.update=(t)=>{
+    shellObjs.forEach(sh=>{
+      sh.electrons.forEach(el=>{
+        const ang = el.phase + t*sh.speed*sh.dir;
+        const v=new THREE.Vector3(sh.rad*Math.cos(ang),0,sh.rad*Math.sin(ang)).applyEuler(sh.ring.rotation);
+        el.mesh.position.copy(v);
+      });
+      sh.ring.rotation.y += 0.0012*sh.dir;
+    });
+  };
+  return g;
+}
+
+/* ------------------------------------------------------------------ */
+/*  STATE TRANSITIONS                                                   */
+/* ------------------------------------------------------------------ */
+function startPop(tile){
+  busy=true; setState('moving');
+  activeTile = tile;
+  const el = tile.userData.el;
+  const isotopes = getIsotopesFor(el);
+
+  const hPos=new THREE.Vector3(); tile.getWorldPosition(hPos);
+  popGroup=new THREE.Group();
+  popGroup.position.copy(hPos);
+  popGroup.userData.el = el;
+  sceneFg.add(popGroup);
+
+  const subs=[];
+  for(let i=0;i<4;i++){
+    const sub=buildIsotopeCube(el.sym, isotopes[i], i);
+    popGroup.add(sub);
+    subs.push(sub);
+  }
+  popGroup.userData.subs=subs;
+
+  const dir=new THREE.Vector3(); camera.getWorldDirection(dir);
+  const staging=camera.position.clone().add(dir.multiplyScalar(6.2));
+
+  gsap.to(popGroup.position, {x:staging.x, y:staging.y, z:staging.z, duration:1.0, ease:'power3.out'});
+  gsap.to(popGroup.scale, {x:1.6,y:1.6,z:1.6, duration:1.0, ease:'power3.out'});
+  subs.forEach(s=> gsap.to(s.scale, {x:1,y:1,z:1, duration:.6, delay:.15, ease:'back.out(1.6)'}));
+
+  gsap.delayedCall(1.0, ()=> separateAndFace(subs));
+}
+
+function slerpTo(obj, targetQuat, duration){
+  const startQuat=obj.quaternion.clone();
+  const p={t:0};
+  gsap.to(p, {t:1, duration, ease:'power2.inOut', onUpdate:()=>{
+    obj.quaternion.copy(startQuat).slerp(targetQuat, p.t);
+  }});
+}
+
+function separateAndFace(subs){
+  blurOverlay.classList.add('active');
+  const camQuat=camera.quaternion.clone();
+  const right=new THREE.Vector3(1,0,0).applyQuaternion(camQuat);
+
+  subs.forEach((s,i)=>{
+    const ox=CUBE_SLOTS[i]*1.15; // spread out slightly more, still side-by-side with a gap
+    const targetPos=right.clone().multiplyScalar(ox);
+    s.userData.poppedLocalPos = targetPos.clone();
+    gsap.to(s.position, {x:targetPos.x, y:targetPos.y, z:targetPos.z, duration:0.9, ease:'power2.inOut'});
+    slerpTo(s, camQuat, 0.9);
+  });
+
+  gsap.delayedCall(0.95, ()=>{
+    setState('popped'); busy=false;
+    backBtn.style.display='block';
+  });
+}
+
+function selectIsotope(i){
+  busy=true; setState('moving');
+  const subs=popGroup.userData.subs;
+  const chosen=subs[i];
+
+  subs.forEach((s,idx)=>{
+    if(idx===i) return;
+    gsap.to(s.scale, {x:0,y:0,z:0, duration:.4, ease:'power1.in', onComplete:()=>{ s.visible=false; }});
+  });
+
+  gsap.to(chosen.position, {x:0,y:0,z:0, duration:.5, ease:'power2.inOut'});
+  gsap.to(chosen.scale, {x:1.3,y:1.3,z:1.3, duration:.5, ease:'power2.inOut', onComplete:()=>{
+    showDetail(popGroup.userData.el, chosen.userData.iso);
+    setState('detail'); busy=false;
+    // the atom illustration now stands in its place — dissolve the cube itself
+    gsap.to(chosen.scale, {x:0.001,y:0.001,z:0.001, duration:.45, delay:.1, ease:'power1.in', onComplete:()=>{ chosen.visible=false; }});
+  }});
+}
+
+function showDetail(el, iso){
+  const atom=buildAtom(iso.protons, iso.neutrons);
+  atom.position.copy(popGroup.position);
+  sceneFg.add(atom);
+  currentAtom=atom;
+  animatedAtoms.push(atom);
+
+  detailPanel.innerHTML = `
+    <h3>${el.sym}-${iso.mass}</h3>
+    <span class="sub">${iso.name} · ${el.name} (Z=${el.z})</span>
+    <div class="row"><span>Protons</span><b>${iso.protons}</b></div>
+    <div class="row"><span>Neutrons</span><b>${iso.neutrons}</b></div>
+    <div class="row"><span>Electrons</span><b>${el.z}</b></div>
+    <p>${iso.note}</p>
+  `;
+  detailPanel.classList.add('show');
+}
+
+function collapseToPopped(){
+  if(currentAtom){ sceneFg.remove(currentAtom); animatedAtoms.splice(animatedAtoms.indexOf(currentAtom),1); currentAtom=null; }
+  detailPanel.classList.remove('show');
+  const subs=popGroup.userData.subs;
+  subs.forEach(s=>{
+    s.visible=true;
+    gsap.to(s.scale, {x:1,y:1,z:1, duration:.4, ease:'power2.out'});
+    const p=s.userData.poppedLocalPos;
+    gsap.to(s.position, {x:p.x, y:p.y, z:p.z, duration:.45, ease:'power2.inOut'});
+  });
+  setState('popped');
+}
+
+function returnToOverview(){
+  if(!popGroup) return;
+  busy=true;
+  if(currentAtom){ sceneFg.remove(currentAtom); animatedAtoms.splice(animatedAtoms.indexOf(currentAtom),1); currentAtom=null; }
+  detailPanel.classList.remove('show');
+  blurOverlay.classList.remove('active');
+
+  const hPos=new THREE.Vector3(); activeTile.getWorldPosition(hPos);
+  gsap.to(popGroup.scale, {x:.001,y:.001,z:.001, duration:.55, ease:'power2.in'});
+  gsap.to(popGroup.position, {x:hPos.x, y:hPos.y, z:hPos.z, duration:.55, ease:'power2.in', onComplete:()=>{
+    sceneFg.remove(popGroup);
+    popGroup=null;
+    backBtn.style.display='none';
+    setState('overview'); busy=false;
+  }});
+}
+
+backBtn.addEventListener('click', ()=>{
+  if(busy) return;
+  if(state==='detail') collapseToPopped();
+  else if(state==='popped') returnToOverview();
+});
+window.addEventListener('keydown', e=>{
+  if(e.key==='Escape' && !busy){
+    if(state==='detail') collapseToPopped();
+    else if(state==='popped') returnToOverview();
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/*  RENDER LOOP                                                         */
+/* ------------------------------------------------------------------ */
+const clock=new THREE.Clock();
+let elapsed=0;
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=clock.getDelta();
+  elapsed+=dt;
+  animatedAtoms.forEach(a=>a.userData.update(elapsed));
+  rendererMain.render(sceneMain, camera);
+  rendererFg.render(sceneFg, camera);
+}
+animate();
+</script>
+</body>
+</html>

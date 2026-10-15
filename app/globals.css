@@ -1,0 +1,85 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+:root {
+  --bg: #090c11;
+  --panel: rgba(15, 20, 28, 0.62);
+  --panel-border: rgba(120, 170, 200, 0.18);
+  --cyan: #5ec8d8;
+  --amber: #ffb454;
+  --text: #e7edf3;
+  --muted: #93a1b0;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); font-family: 'Inter', sans-serif; }
+
+.stage { position: absolute; inset: 0; overflow: hidden; }
+
+#blur-overlay {
+  position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(0px);
+  background: rgba(6, 9, 13, 0);
+  transition: backdrop-filter .7s ease, background .7s ease;
+}
+#blur-overlay.active {
+  backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+  background: rgba(6, 9, 13, 0.42);
+}
+
+#hit-layer { position: absolute; inset: 0; z-index: 4; cursor: grab; background: transparent; }
+#hit-layer.grabbing { cursor: grabbing; }
+
+#hud {
+  position: absolute; top: 16px; left: 16px; z-index: 5; color: var(--text);
+  background: var(--panel); border: 1px solid var(--panel-border);
+  padding: 12px 16px; border-radius: 10px; max-width: 260px; pointer-events: none;
+  font-size: 12.5px; line-height: 1.6; backdrop-filter: blur(6px);
+}
+#hud .title { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: var(--cyan); font-size: 13px; letter-spacing: .02em; margin-bottom: 4px; display: block; }
+#hud .state { margin-top: 8px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; }
+
+#backBtn {
+  position: absolute; top: 16px; right: 16px; z-index: 6;
+  padding: 9px 18px; background: rgba(20, 26, 36, .75); border: 1px solid var(--panel-border);
+  color: var(--text); border-radius: 9px; font-size: 13px; font-family: 'Inter', sans-serif; font-weight: 500;
+  cursor: pointer; backdrop-filter: blur(6px); transition: background .2s;
+}
+#backBtn:hover { background: rgba(94, 200, 216, 0.18); }
+
+#detailPanel {
+  position: absolute; left: 16px; bottom: 16px; z-index: 6;
+  width: 290px; color: var(--text); background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 12px; padding: 18px 20px; backdrop-filter: blur(8px);
+  opacity: 0; transform: translateY(12px); pointer-events: none;
+  transition: opacity .4s ease, transform .4s ease;
+}
+#detailPanel.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+#detailPanel h3 { margin: 0 0 2px; font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 700; color: var(--amber); }
+#detailPanel .sub { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); letter-spacing: .03em; text-transform: uppercase; margin-bottom: 12px; display: block; }
+#detailPanel .row { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+#detailPanel .row b { color: var(--cyan); font-weight: 500; }
+#detailPanel p { font-size: 12.5px; color: var(--muted); line-height: 1.55; margin: 12px 0 0; }
+#detailPanel p.notable { color: var(--amber); }
+
+#toast {
+  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(8px); z-index: 6;
+  background: rgba(20, 26, 36, .85); border: 1px solid var(--panel-border); color: var(--text);
+  padding: 9px 18px; border-radius: 20px; font-size: 12.5px; opacity: 0; transition: opacity .3s, transform .3s;
+  pointer-events: none; backdrop-filter: blur(6px);
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Accessibility: keyboard nav + screen-reader parallel UI (AccessibleOverlay.jsx).
+   Standard "visually hidden but still in the a11y tree / focusable" pattern —
+   deliberately NOT display:none or visibility:hidden, which would remove
+   these elements from both screen readers and the tab order. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.sr-only button:focus-visible {
+  /* the button itself stays off-screen; keyboard focus is communicated by
+     reusing the same 3D hover-highlight a mouse user sees (see
+     focusController.js / HitLayer.jsx), so no on-screen outline is needed
+     here */
+  outline: none;
+}
